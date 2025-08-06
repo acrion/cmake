@@ -4,6 +4,7 @@ function(get_project_version_from_commit_count BRANCH_NAME)
         message(FATAL_ERROR "Could not find git (required to set project version)")
     endif ()
 
+    message(status "${PROJECT_NAME}: CMAKE_CURRENT_SOURCE_DIR       = '${CMAKE_CURRENT_SOURCE_DIR}'")
     execute_process(
         COMMAND "${GIT_EXECUTABLE}" rev-list ${BRANCH_NAME} --count
         WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
