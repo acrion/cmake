@@ -1,40 +1,62 @@
 #!/usr/bin/env bash
 
+# This script updates the RPATH of executables and shared libraries on Linux,
+# or the dependent library paths on macOS. It makes them search for dependencies
+# in their own directory first ('$ORIGIN' on Linux, '@loader_path' on macOS).
+# This is useful for creating relocatable application bundles.
+
+# --- Helper Functions ---
+
+# Shows how to use the script.
 show_usage() {
     echo
-    echo "Usage: $0 <path-to-file-or-directory> [file-filter] [-n]"
-    echo
-    echo "This script updates the paths of dependent binaries or shared libraries to reference"
-    echo "those located in the build directory, avoiding system-wide locations after a build process."
-    echo "Designed for use on macOS (for .dylib files and executables) and Linux (for .so files and executables)."
+    echo "Usage: $0 <path> [file-filter] [-n] [--verbose]"
     echo
     echo "Arguments:"
-    echo "  <path-to-file-or-directory>  The file or directory to process."
-    echo "  [file-filter]                Optional. Restricts the search in a directory, e.g., '*.so*'."
-    echo "  [-n]                         Optional. If provided, the search will not be recursive."
+    echo "  <path>          Required. The file or directory to process."
+    echo "  [file-filter]   Optional. A pattern to filter files, e.g., '*.so*'."
+    echo "  [-n]            Optional. If provided, the search in a directory will not be recursive."
+    echo "  [--verbose]     Optional. Enables detailed logging for debugging purposes."
     echo
 }
 
-check_requirements() {
-    if [[ "$OSTYPE" == "linux-gnu" ]]; then
-        command -v patchelf >/dev/null 2>&1 || { echo >&2 "The tool 'patchelf' is required but it's not installed. Aborting."; exit 1; }
-    elif [[ "$OSTYPE" == "darwin"* ]]; then
-        command -v install_name_tool >/dev/null 2>&1 || { echo >&2 "The tool 'install_name_tool' is required but it's not installed. Aborting."; exit 1; }
-        command -v otool >/dev/null 2>&1 || { echo >&2 "The tool 'otool' is required but it's not installed. Aborting."; exit 1; }
-        command -v realpath >/dev/null 2>&1 || { echo >&2 "The tool 'realpath' is required but it's not installed. Aborting."; exit 1; }
+# Logs a message, but only if verbose mode is enabled.
+# Prepends a timestamp and [DEBUG] prefix.
+log_verbose() {
+    if [[ "$VERBOSE_MODE" == "true" ]]; then
+        echo "[$(date +'%H:%M:%S')] [DEBUG] $1"
     fi
 }
 
+# Checks if required command-line tools (like patchelf) are installed.
+check_requirements() {
+    log_verbose "Checking for required tools..."
+    if [[ "$OSTYPE" == "linux-gnu" ]]; then
+        command -v patchelf >/dev/null 2>&1 || { echo >&2 "Error: 'patchelf' is required but not installed. Aborting."; exit 1; }
+    elif [[ "$OSTYPE" == "darwin"* ]]; then
+        command -v install_name_tool >/dev/null 2>&1 || { echo >&2 "Error: 'install_name_tool' is required but not installed. Aborting."; exit 1; }
+        command -v otool >/dev/null 2>&1 || { echo >&2 "Error: 'otool' is required but not installed. Aborting."; exit 1; }
+        command -v realpath >/dev/null 2>&1 || { echo >&2 "Error: 'realpath' is required but not installed. Aborting."; exit 1; }
+    fi
+    log_verbose "All required tools are present."
+}
+
+# --- Platform-Specific Patching Logic ---
+
 patch_linux_binary() {
     local target_file="$1"
-    echo "Processing $target_file on Linux..."
-    patchelf --set-rpath '$ORIGIN' "$target_file"
-    echo "RPATH successfully set to '\$ORIGIN' for $target_file."
+    echo "Processing Linux binary: $target_file"
+    log_verbose "Executing: patchelf --set-rpath '\$ORIGIN' \"$target_file\""
+    if patchelf --set-rpath '$ORIGIN' "$target_file"; then
+        log_verbose "Successfully set RPATH to '\$ORIGIN' for $target_file."
+    else
+        echo "Warning: patchelf command failed for $target_file."
+    fi
 }
 
 patch_macos_binary() {
     local target_file="$1"
-    echo "Processing $target_file..."
+    echo "Processing macOS binary: $target_file"
 
     local otool_output=$(otool -L "$target_file")
     IFS=$'\n'
@@ -54,9 +76,9 @@ patch_macos_binary() {
 
             if [[ "$full_path_name" != "$target_file_name" && "$full_path" != "$target_file" && ! "$full_path" =~ ^@.* ]]; then
                 if [[ -f "$path_to_lib" ]]; then
-                    if install_name_tool -change "$full_path" "@loader_path/$lib_name" "$target_file"; then
+                if install_name_tool -change "$full_path" "@loader_path/$lib_name" "$target_file"; then
                         echo "Successfully updated '$target_file' to load '$lib_name' from the same directory instead of '$full_path'."
-                    else
+                else
                         echo "Failed to update '$target_file' to load '$lib_name' from the same directory instead of '$full_path'."
                         exit 1
                     fi
@@ -69,9 +91,13 @@ patch_macos_binary() {
     done
 }
 
+# Determines file type and calls the appropriate patching function.
 patch_binary() {
-    local binary_file=$1
-    local filetype=$(file --brief --no-dereference "$binary_file")
+    local binary_file="$1"
+    log_verbose "Checking file type for: $binary_file"
+    local filetype
+    filetype=$(file --brief --no-dereference "$binary_file")
+    log_verbose "File type identified as: '$filetype'"
 
     # This regex covers both macOS and Linux output strings for executables and shared libraries,
     # e. g. "Mach-O 64-bit executable", "ELF 64-bit LSB pie executable", "ELF 64-bit LSB shared object"
@@ -84,33 +110,64 @@ patch_binary() {
             Mach-O*)
                 patch_macos_binary "$binary_file"
                 ;;
+            *)
+                log_verbose "File is of a recognized type but not ELF or Mach-O. Skipping."
+                ;;
         esac
+    else
+        log_verbose "File is not an executable or shared library. Skipping."
     fi
 }
 
-if [[ $# -eq 0 || $# -gt 3 ]]; then
+# --- Main Execution Logic ---
+
+# Argument parsing
+TARGET_PATH=""
+FILE_FILTER=""
+NON_RECURSIVE_FLAG=false
+VERBOSE_MODE=false
+declare -a positional_args=()
+
+for arg in "$@"; do
+    case "$arg" in
+        -n)
+        NON_RECURSIVE_FLAG=true
+        shift # remove flag from argument list
+        ;;
+        --verbose)
+        VERBOSE_MODE=true
+        shift # remove flag from argument list
+        ;;
+        *)
+        positional_args+=("$arg") # store positional arg
+        ;;
+    esac
+done
+
+# Assign positional arguments
+if (( ${#positional_args[@]} > 0 )); then
+    TARGET_PATH="${positional_args[0]}"
+fi
+if (( ${#positional_args[@]} > 1 )); then
+    FILE_FILTER="${positional_args[1]}"
+fi
+
+# Validate that the target path was provided
+if [[ -z "$TARGET_PATH" ]]; then
     show_usage
     exit 1
 fi
 
+# --- Script Start ---
+log_verbose "Script starting. Verbose mode is ON."
+log_verbose "Target Path: '$TARGET_PATH'"
+log_verbose "File Filter: '$FILE_FILTER'"
+log_verbose "Non-recursive: $NON_RECURSIVE_FLAG"
+
 check_requirements
 
-TARGET_PATH="$1"
-FILE_FILTER=""
-NON_RECURSIVE_FLAG=false
-
-if [[ "$2" == "-n" ]]; then
-    NON_RECURSIVE_FLAG=true
-elif [[ -n "$2" ]]; then
-    FILE_FILTER="$2"
-fi
-
-if [[ "$3" == "-n" ]]; then
-    NON_RECURSIVE_FLAG=true
-fi
-
-
 if [[ -d "$TARGET_PATH" ]]; then
+    # Construct the find command
     find_cmd="find \"$TARGET_PATH\""
     if [[ "$NON_RECURSIVE_FLAG" == true ]]; then
         find_cmd+=" -maxdepth 1"
@@ -119,12 +176,19 @@ if [[ -d "$TARGET_PATH" ]]; then
     if [[ -n "$FILE_FILTER" ]]; then
         find_cmd+=" -name \"$FILE_FILTER\""
     fi
-    eval "$find_cmd" | while read -r binary_file; do
-        patch_binary "$binary_file"
+    
+    log_verbose "Executing find command: $find_cmd"
+    
+    # Process the found files
+    eval "$find_cmd" | while read -r file_to_process; do
+        patch_binary "$file_to_process"
     done
+
 elif [[ -f "$TARGET_PATH" ]]; then
     patch_binary "$TARGET_PATH"
 else
-    echo "The specified path is not valid."
+    echo "Error: The specified path '$TARGET_PATH' is not a valid file or directory."
     exit 1
 fi
+
+log_verbose "Script finished."
