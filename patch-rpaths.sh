@@ -2,11 +2,16 @@
 
 show_usage() {
     echo
-    echo "Usage: $0 <path-to-file-or-directory>"
+    echo "Usage: $0 <path-to-file-or-directory> [file-filter] [-n]"
     echo
     echo "This script updates the paths of dependent binaries or shared libraries to reference"
     echo "those located in the build directory, avoiding system-wide locations after a build process."
     echo "Designed for use on macOS (for .dylib files and executables) and Linux (for .so files and executables)."
+    echo
+    echo "Arguments:"
+    echo "  <path-to-file-or-directory>  The file or directory to process."
+    echo "  [file-filter]                Optional. Restricts the search in a directory, e.g., '*.so*'."
+    echo "  [-n]                         Optional. If provided, the search will not be recursive."
     echo
 }
 
@@ -83,7 +88,7 @@ patch_binary() {
     fi
 }
 
-if [[ $# -eq 0 ]]; then
+if [[ $# -eq 0 || $# -gt 3 ]]; then
     show_usage
     exit 1
 fi
@@ -91,9 +96,30 @@ fi
 check_requirements
 
 TARGET_PATH="$1"
+FILE_FILTER=""
+NON_RECURSIVE_FLAG=false
+
+if [[ "$2" == "-n" ]]; then
+    NON_RECURSIVE_FLAG=true
+elif [[ -n "$2" ]]; then
+    FILE_FILTER="$2"
+fi
+
+if [[ "$3" == "-n" ]]; then
+    NON_RECURSIVE_FLAG=true
+fi
+
 
 if [[ -d "$TARGET_PATH" ]]; then
-    find "$TARGET_PATH" -type f | while read -r binary_file; do
+    find_cmd="find \"$TARGET_PATH\""
+    if [[ "$NON_RECURSIVE_FLAG" == true ]]; then
+        find_cmd+=" -maxdepth 1"
+    fi
+    find_cmd+=" -type f"
+    if [[ -n "$FILE_FILTER" ]]; then
+        find_cmd+=" -name \"$FILE_FILTER\""
+    fi
+    eval "$find_cmd" | while read -r binary_file; do
         patch_binary "$binary_file"
     done
 elif [[ -f "$TARGET_PATH" ]]; then
