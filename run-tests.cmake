@@ -9,7 +9,7 @@ else ()
 
     add_custom_target(
         run_${PROJECT_NAME}_tests ALL
-        COMMAND ${CMAKE_CURRENT_LIST_DIR}/run_and_check_stderr.sh ${executable_path} --gtest_brief=1 || true # avoid automatic deletion of the test executable on test failure
+        COMMAND bash ${CMAKE_CURRENT_LIST_DIR}/run_and_check_stderr.sh ${executable_path} --gtest_brief=1 || true # avoid automatic deletion of the test executable on test failure
         COMMENT "Running ${PROJECT_NAME}..."
     )
 endif ()
