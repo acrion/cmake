@@ -1,5 +1,5 @@
 if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang")
-    set(GCC_LIKE_COMMON_FLAGS "-pthread -Wall -pedantic -Wno-unknown-pragmas")
+    set(GCC_LIKE_COMMON_FLAGS -pthread -Wall -pedantic -Wno-unknown-pragmas)
 endif ()
 
 if (WIN32)
